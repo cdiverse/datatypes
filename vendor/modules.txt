@@ -55,6 +55,8 @@ github.com/mattn/go-sqlite3
 ## explicit; go 1.17
 golang.org/x/crypto/md4
 golang.org/x/crypto/pbkdf2
+# golang.org/x/net v0.7.0
+## explicit; go 1.17
 # golang.org/x/text v0.7.0
 ## explicit; go 1.17
 golang.org/x/text/cases
