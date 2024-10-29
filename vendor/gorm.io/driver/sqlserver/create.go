@@ -9,6 +9,10 @@ import (
 )
 
 func Create(db *gorm.DB) {
+	if db.Error != nil {
+		return
+	}
+
 	if db.Statement.Schema != nil && !db.Statement.Unscoped {
 		for _, c := range db.Statement.Schema.CreateClauses {
 			db.Statement.AddClause(c)
@@ -48,13 +52,13 @@ func Create(db *gorm.DB) {
 				if field := db.Statement.Schema.PrioritizedPrimaryField; field != nil && field.AutoIncrement {
 					switch db.Statement.ReflectValue.Kind() {
 					case reflect.Struct:
-						_, isZero := field.ValueOf(db.Statement.ReflectValue)
+						_, isZero := field.ValueOf(db.Statement.Context, db.Statement.ReflectValue)
 						setIdentityInsert = !isZero
 					case reflect.Slice, reflect.Array:
 						for i := 0; i < db.Statement.ReflectValue.Len(); i++ {
 							obj := db.Statement.ReflectValue.Index(i)
 							if reflect.Indirect(obj).Kind() == reflect.Struct {
-								_, isZero := field.ValueOf(db.Statement.ReflectValue.Index(i))
+								_, isZero := field.ValueOf(db.Statement.Context, db.Statement.ReflectValue.Index(i))
 								setIdentityInsert = !isZero
 							}
 							break
@@ -114,55 +118,11 @@ func Create(db *gorm.DB) {
 	}
 
 	if !db.DryRun && db.Error == nil {
-		if len(db.Statement.Schema.FieldsWithDefaultDBValue) > 0 {
+		if db.Statement.Schema != nil && len(db.Statement.Schema.FieldsWithDefaultDBValue) > 0 {
 			rows, err := db.Statement.ConnPool.QueryContext(db.Statement.Context, db.Statement.SQL.String(), db.Statement.Vars...)
-
-			if err == nil {
+			if db.AddError(err) == nil {
 				defer rows.Close()
-
-				values := make([]interface{}, len(db.Statement.Schema.FieldsWithDefaultDBValue))
-
-				switch db.Statement.ReflectValue.Kind() {
-				case reflect.Slice, reflect.Array:
-					var hasPrimaryValues, nonePrimaryValues []int
-					for i := 0; i < db.Statement.ReflectValue.Len(); i++ {
-						obj := db.Statement.ReflectValue.Index(i)
-						if reflect.Indirect(obj).Kind() != reflect.Struct {
-							return
-						}
-
-						if _, isZero := db.Statement.Schema.PrioritizedPrimaryField.ValueOf(obj); isZero {
-							nonePrimaryValues = append(nonePrimaryValues, i)
-						} else {
-							hasPrimaryValues = append([]int{i}, hasPrimaryValues...)
-						}
-					}
-
-					for rows.Next() {
-						if int(db.RowsAffected) < len(nonePrimaryValues) {
-							for idx, field := range db.Statement.Schema.FieldsWithDefaultDBValue {
-								fieldValue := field.ReflectValueOf(db.Statement.ReflectValue.Index(nonePrimaryValues[db.RowsAffected]))
-								values[idx] = fieldValue.Addr().Interface()
-							}
-
-							db.AddError(rows.Scan(values...))
-						}
-						db.RowsAffected++
-					}
-				case reflect.Struct:
-					for idx, field := range db.Statement.Schema.FieldsWithDefaultDBValue {
-						values[idx] = field.ReflectValueOf(db.Statement.ReflectValue).Addr().Interface()
-					}
-
-					if rows.Next() {
-						db.RowsAffected++
-						db.AddError(rows.Scan(values...))
-					}
-				}
-
-				db.AddError(rows.Err())
-			} else {
-				db.AddError(err)
+				gorm.Scan(rows, db, gorm.ScanUpdate|gorm.ScanOnConflictDoNothing)
 			}
 		} else {
 			result, err := db.Statement.ConnPool.ExecContext(db.Statement.Context, db.Statement.SQL.String(), db.Statement.Vars...)
