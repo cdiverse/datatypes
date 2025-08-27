@@ -71,23 +71,26 @@ type tlsHandshakeConn struct {
 }
 
 func (c *tlsHandshakeConn) Read(b []byte) (n int, err error) {
-	if c.packetPending {
-		c.packetPending = false
-		err = c.buf.FinishPacket()
-		if err != nil {
-			err = fmt.Errorf("cannot send handshake packet: %s", err.Error())
-			return
-		}
+	var finished bool
+	finished, err = c.FinishPacket()
+
+	if err != nil {
+		return
+	}
+
+	if finished {
 		c.continueRead = false
 	}
+
 	if !c.continueRead {
 		var packet packetType
 		packet, err = c.buf.BeginRead()
 		if err != nil {
-			err = fmt.Errorf("cannot read handshake packet: %s", err.Error())
+			err = fmt.Errorf("cannot read handshake packet: %w", err)
 			return
 		}
-		if packet != packPrelogin {
+		// Older endpoints send back header type 4 instead of 18
+		if packet != packPrelogin && packet != packReply {
 			err = fmt.Errorf("unexpected packet %d, expecting prelogin", packet)
 			return
 		}
@@ -102,6 +105,21 @@ func (c *tlsHandshakeConn) Write(b []byte) (n int, err error) {
 		c.packetPending = true
 	}
 	return c.buf.Write(b)
+}
+
+// FinishPacket flushes the current plaintext packet boundary before the
+// underlying Conn is replaced during the TLS handshake upgrade.
+func (c *tlsHandshakeConn) FinishPacket() (bool, error) {
+	if c.packetPending {
+		err := c.buf.FinishPacket()
+		if err != nil {
+			err = fmt.Errorf("cannot send handshake packet: %w", err)
+			return false, err
+		}
+		c.packetPending = false
+		return true, nil
+	}
+	return false, nil
 }
 
 func (c *tlsHandshakeConn) Close() error {

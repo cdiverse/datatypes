@@ -3,16 +3,19 @@ package msdsn
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/google/uuid"
 )
 
 type (
@@ -43,6 +46,8 @@ const (
 	LogTransaction Log = 32
 	LogDebug       Log = 64
 	LogRetries     Log = 128
+	// LogSessionIDs tells the session logger to include activity id and connection id
+	LogSessionIDs Log = 0x8000
 )
 
 const (
@@ -77,7 +82,25 @@ const (
 	Protocol               = "protocol"
 	DialTimeout            = "dial timeout"
 	Pipe                   = "pipe"
+	MultiSubnetFailover    = "multisubnetfailover"
+	NoTraceID              = "notraceid"
+	GuidConversion         = "guid conversion"
+	Timezone               = "timezone"
 )
+
+type EncodeParameters struct {
+	// Properly convert GUIDs, using correct byte endianness
+	GuidConversion bool
+	// Timezone is the timezone to use for encoding and decoding datetime values.
+	Timezone *time.Location
+}
+
+func (e EncodeParameters) GetTimezone() *time.Location {
+	if e.Timezone == nil {
+		return time.UTC
+	}
+	return e.Timezone
+}
 
 type Config struct {
 	Port       uint64
@@ -127,6 +150,46 @@ type Config struct {
 	ChangePassword string
 	//ColumnEncryption is true if the application needs to decrypt or encrypt Always Encrypted values
 	ColumnEncryption bool
+	// Attempt to connect to all IPs in parallel when MultiSubnetFailover is true
+	MultiSubnetFailover bool
+	// guid to set as Activity Id in the prelogin packet. Defaults to a new value for each Config.
+	ActivityID []byte
+	// When true, no connection id or trace id value is sent in the prelogin packet.
+	// Some cloud servers may block connections that lack such values.
+	NoTraceID bool
+	// Parameters related to type encoding
+	Encoding EncodeParameters
+}
+
+func readDERFile(filename string) ([]byte, error) {
+	derBytes, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	cert, err := x509.ParseCertificate(derBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	pemBytes := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: cert.Raw,
+	})
+	return pemBytes, nil
+}
+
+func readCertificate(certificate string) ([]byte, error) {
+	certType := strings.ToLower(filepath.Ext(certificate))
+
+	switch certType {
+	case ".pem":
+		return os.ReadFile(certificate)
+	case ".der":
+		return readDERFile(certificate)
+	default:
+		return nil, fmt.Errorf("certificate type %s is not supported", certType)
+	}
 }
 
 // Build a tls.Config object from the supplied certificate.
@@ -146,7 +209,7 @@ func SetupTLS(certificate string, insecureSkipVerify bool, hostInCertificate str
 	if len(certificate) == 0 {
 		return &config, nil
 	}
-	pem, err := ioutil.ReadFile(certificate)
+	pem, err := readCertificate(certificate)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read certificate %q: %w", certificate, err)
 	}
@@ -248,8 +311,15 @@ func Parse(dsn string) (Config, error) {
 	p := Config{
 		ProtocolParameters: map[string]interface{}{},
 		Protocols:          []string{},
+		Encoding: EncodeParameters{
+			Timezone: time.UTC,
+		},
 	}
 
+	activityid, uerr := uuid.NewRandom()
+	if uerr == nil {
+		p.ActivityID = activityid[:]
+	}
 	var params map[string]string
 	var err error
 
@@ -266,6 +336,15 @@ func Parse(dsn string) (Config, error) {
 			return p, fmt.Errorf("invalid log parameter '%s': %s", strlog, err.Error())
 		}
 		p.LogFlags = Log(flags)
+	}
+
+	tz, ok := params[Timezone]
+	if ok {
+		location, err := time.LoadLocation(tz)
+		if err != nil {
+			return p, fmt.Errorf("invalid timezone '%s': %s", tz, err.Error())
+		}
+		p.Encoding.Timezone = location
 	}
 
 	p.Database = params[Database]
@@ -451,6 +530,45 @@ func Parse(dsn string) (Config, error) {
 		}
 		p.ColumnEncryption = columnEncryption
 	}
+
+	msf, ok := params[MultiSubnetFailover]
+	if ok {
+		multiSubnetFailover, err := strconv.ParseBool(msf)
+		if err != nil {
+			if strings.EqualFold(msf, "Enabled") {
+				multiSubnetFailover = true
+			} else if strings.EqualFold(msf, "Disabled") {
+				multiSubnetFailover = false
+			} else {
+				return p, fmt.Errorf("invalid multiSubnetFailover value '%v': %v", multiSubnetFailover, err.Error())
+			}
+		}
+		p.MultiSubnetFailover = multiSubnetFailover
+	} else {
+		// Defaulting to true to prevent breaking change although other client libraries default to false
+		p.MultiSubnetFailover = true
+	}
+	nti, ok := params[NoTraceID]
+	if ok {
+		notraceid, err := strconv.ParseBool(nti)
+		if err == nil {
+			p.NoTraceID = notraceid
+		}
+	}
+
+	guidConversion, ok := params[GuidConversion]
+	if ok {
+		var err error
+		p.Encoding.GuidConversion, err = strconv.ParseBool(guidConversion)
+		if err != nil {
+			f := "invalid guid conversion '%s': %s"
+			return p, fmt.Errorf(f, guidConversion, err.Error())
+		}
+	} else {
+		// set to false for backward compatibility
+		p.Encoding.GuidConversion = false
+	}
+
 	return p, nil
 }
 
@@ -511,6 +629,15 @@ func (p Config) URL() *url.URL {
 	if p.ColumnEncryption {
 		q.Add("columnencryption", "true")
 	}
+
+	if p.Encoding.GuidConversion {
+		q.Add(GuidConversion, strconv.FormatBool(p.Encoding.GuidConversion))
+	}
+
+	if tz := p.Encoding.Timezone; tz != nil && tz != time.UTC {
+		q.Add(Timezone, tz.String())
+	}
+
 	if len(q) > 0 {
 		res.RawQuery = q.Encode()
 	}
@@ -527,13 +654,14 @@ var adoSynonyms = map[string]string{
 	"addr":                      Server,
 	"user":                      UserID,
 	"uid":                       UserID,
+	"pwd":                       Password,
 	"initial catalog":           Database,
 	"column encryption setting": "columnencryption",
 }
 
 func splitConnectionString(dsn string) (res map[string]string) {
 	res = map[string]string{}
-	parts := strings.Split(dsn, ";")
+	parts := splitAdoConnectionStringParts(dsn)
 	for _, part := range parts {
 		if len(part) == 0 {
 			continue
@@ -546,6 +674,12 @@ func splitConnectionString(dsn string) (res map[string]string) {
 		var value string = ""
 		if len(lst) > 1 {
 			value = strings.TrimSpace(lst[1])
+			// Remove surrounding double quotes if present
+			if len(value) >= 2 && strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
+				value = value[1 : len(value)-1]
+				// Unescape double quotes
+				value = strings.ReplaceAll(value, "\"\"", "\"")
+			}
 		}
 		synonym, hasSynonym := adoSynonyms[name]
 		if hasSynonym {
@@ -569,6 +703,45 @@ func splitConnectionString(dsn string) (res map[string]string) {
 		res[name] = value
 	}
 	return res
+}
+
+// splitAdoConnectionStringParts splits an ADO connection string into parts,
+// properly handling double-quoted values that may contain semicolons
+func splitAdoConnectionStringParts(dsn string) []string {
+	var parts []string
+	var current strings.Builder
+	inQuotes := false
+	
+	runes := []rune(dsn)
+	for i := 0; i < len(runes); i++ {
+		char := runes[i]
+		
+		if char == '"' {
+			if inQuotes && i+1 < len(runes) && runes[i+1] == '"' {
+				// Double quote escape sequence - add both quotes to current part
+				current.WriteRune(char)
+				current.WriteRune(runes[i+1])
+				i++ // Skip the next quote
+			} else {
+				// Start or end of quoted section
+				inQuotes = !inQuotes
+				current.WriteRune(char)
+			}
+		} else if char == ';' && !inQuotes {
+			// Semicolon outside of quotes - end current part
+			parts = append(parts, current.String())
+			current.Reset()
+		} else {
+			current.WriteRune(char)
+		}
+	}
+	
+	// Add the last part if it's not empty
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+	
+	return parts
 }
 
 // Splits a URL of the form sqlserver://username:password@host/instance?param1=value&param2=value
