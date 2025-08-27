@@ -1,5 +1,9 @@
-# github.com/go-sql-driver/mysql v1.7.0
-## explicit; go 1.13
+# filippo.io/edwards25519 v1.1.0
+## explicit; go 1.20
+filippo.io/edwards25519
+filippo.io/edwards25519/field
+# github.com/go-sql-driver/mysql v1.8.1
+## explicit; go 1.18
 github.com/go-sql-driver/mysql
 # github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9
 ## explicit
@@ -16,17 +20,16 @@ github.com/jackc/pgpassfile
 # github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761
 ## explicit; go 1.14
 github.com/jackc/pgservicefile
-# github.com/jackc/pgx/v5 v5.5.5
-## explicit; go 1.19
+# github.com/jackc/pgx/v5 v5.6.0
+## explicit; go 1.20
 github.com/jackc/pgx/v5
-github.com/jackc/pgx/v5/internal/anynil
 github.com/jackc/pgx/v5/internal/iobufpool
 github.com/jackc/pgx/v5/internal/pgio
 github.com/jackc/pgx/v5/internal/sanitize
 github.com/jackc/pgx/v5/internal/stmtcache
 github.com/jackc/pgx/v5/pgconn
+github.com/jackc/pgx/v5/pgconn/ctxwatch
 github.com/jackc/pgx/v5/pgconn/internal/bgreader
-github.com/jackc/pgx/v5/pgconn/internal/ctxwatch
 github.com/jackc/pgx/v5/pgproto3
 github.com/jackc/pgx/v5/pgtype
 github.com/jackc/pgx/v5/pgxpool
@@ -89,11 +92,11 @@ golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
 golang.org/x/text/width
-# gorm.io/driver/mysql v1.5.7
-## explicit; go 1.14
+# gorm.io/driver/mysql v1.6.0
+## explicit; go 1.18
 gorm.io/driver/mysql
-# gorm.io/driver/postgres v1.5.9
-## explicit; go 1.19
+# gorm.io/driver/postgres v1.6.0
+## explicit; go 1.20
 gorm.io/driver/postgres
 # gorm.io/driver/sqlite v1.5.6
 ## explicit; go 1.20
@@ -101,11 +104,13 @@ gorm.io/driver/sqlite
 # gorm.io/driver/sqlserver v1.5.3
 ## explicit; go 1.14
 gorm.io/driver/sqlserver
-# gorm.io/gorm v1.25.12
+# gorm.io/gorm v1.30.1
 ## explicit; go 1.18
 gorm.io/gorm
 gorm.io/gorm/callbacks
 gorm.io/gorm/clause
+gorm.io/gorm/internal/lru
+gorm.io/gorm/internal/stmt_store
 gorm.io/gorm/logger
 gorm.io/gorm/migrator
 gorm.io/gorm/schema
